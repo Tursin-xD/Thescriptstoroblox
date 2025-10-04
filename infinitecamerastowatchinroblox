@@ -1,0 +1,263 @@
+-- Executor-Friendly Camera Placement System (Keyboard-Only Rotation)
+-- Works with most executors
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local mouse = player:GetMouse()
+local camera = workspace.CurrentCamera
+
+-- Settings
+local MAX_CAMERAS = math.huge
+local PLACEMENT_KEY = Enum.KeyCode.C
+local VIEW_TOGGLE_KEY = Enum.KeyCode.V
+local DELETE_KEY = Enum.KeyCode.X
+local PERSPECTIVE_TOGGLE_KEY = Enum.KeyCode.T
+local MAX_VERTICAL_ANGLE = math.rad(80)
+local THIRD_PERSON_DISTANCE = 10
+local CAMERA_LOOK_SPEED = 0.03
+
+-- State
+local cameras = {}
+local viewingCamera = false
+local currentCameraIndex = nil
+local originalCameraCFrame = nil
+local cameraRotationX = 0
+local cameraRotationY = 0
+local thirdPersonMode = false
+
+-- GUI Setup
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CameraSystemGUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+pcall(function() screenGui.Parent = CoreGui end)
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 250, 0, 400)
+mainFrame.Position = UDim2.new(1, -260, 0.5, -200)
+mainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 40)
+title.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+title.BorderSizePixel = 0
+title.Text = "Camera System [Keyboard Control]"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 18
+title.Font = Enum.Font.GothamBold
+title.Parent = mainFrame
+
+local instructions = Instance.new("TextLabel")
+instructions.Size = UDim2.new(1, -20, 0, 120)
+instructions.Position = UDim2.new(0, 10, 0, 50)
+instructions.BackgroundTransparency = 1
+instructions.Text = "[C] Place Camera\n[V] View Cameras\n[X] Delete Camera\n[T] Toggle 1st/3rd Person\n[Q/E] Look Up/Down\n[R/F] Look Left/Right\n[1-9] Switch Camera"
+instructions.TextColor3 = Color3.fromRGB(200, 200, 200)
+instructions.TextSize = 14
+instructions.Font = Enum.Font.Gotham
+instructions.TextWrapped = true
+instructions.TextXAlignment = Enum.TextXAlignment.Left
+instructions.TextYAlignment = Enum.TextYAlignment.Top
+instructions.Parent = mainFrame
+
+local listFrame = Instance.new("ScrollingFrame")
+listFrame.Size = UDim2.new(1, -20, 1, -200)
+listFrame.Position = UDim2.new(0, 10, 0, 180)
+listFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 6
+listFrame.Parent = mainFrame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 5)
+listLayout.Parent = listFrame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -20, 0, 30)
+statusLabel.Position = UDim2.new(0, 10, 1, -40)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Ready"
+statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+statusLabel.TextSize = 14
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.Parent = mainFrame
+
+-- Helpers
+local function updateStatus(text, color)
+	statusLabel.Text = text
+	statusLabel.TextColor3 = color or Color3.fromRGB(100, 255, 100)
+end
+
+local function createCameraPart(position)
+	local cameraPart = Instance.new("Part")
+	cameraPart.Size = Vector3.new(2, 2, 1)
+	cameraPart.Position = position
+	cameraPart.Anchored = true
+	cameraPart.CanCollide = false
+	cameraPart.Material = Enum.Material.Neon
+	cameraPart.Color = Color3.fromRGB(100, 150, 255)
+	cameraPart.Name = "SecurityCamera"
+	cameraPart.Parent = workspace
+	return cameraPart
+end
+
+local function updateCameraList()
+	for _, child in pairs(listFrame:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
+	end
+	for i, cam in ipairs(cameras) do
+		local container = Instance.new("Frame")
+		container.Size = UDim2.new(1, -10, 0, 30)
+		container.BackgroundTransparency = 1
+		container.Parent = listFrame
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(1, -35, 1, 0)
+		button.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+		button.BorderSizePixel = 0
+		button.Text = "Camera " .. i
+		button.TextColor3 = Color3.new(1, 1, 1)
+		button.TextSize = 14
+		button.Font = Enum.Font.Gotham
+		button.Parent = container
+		button.MouseButton1Click:Connect(function()
+			viewCamera(i)
+		end)
+		local deleteBtn = Instance.new("TextButton")
+		deleteBtn.Size = UDim2.new(0, 30, 1, 0)
+		deleteBtn.Position = UDim2.new(1, -30, 0, 0)
+		deleteBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+		deleteBtn.BorderSizePixel = 0
+		deleteBtn.Text = "X"
+		deleteBtn.TextColor3 = Color3.new(1, 1, 1)
+		deleteBtn.TextSize = 16
+		deleteBtn.Font = Enum.Font.GothamBold
+		deleteBtn.Parent = container
+		deleteBtn.MouseButton1Click:Connect(function()
+			if cameras[i] and cameras[i].part then cameras[i].part:Destroy() end
+			table.remove(cameras, i)
+			updateCameraList()
+			updateStatus("Camera deleted", Color3.fromRGB(255, 200, 100))
+			if currentCameraIndex == i then exitCameraView() end
+		end)
+	end
+	listFrame.CanvasSize = UDim2.new(0, 0, 0, #cameras * 35)
+end
+
+-- Place a camera
+local function placeCamera()
+	local target = mouse.Hit.Position
+	local cameraPart = createCameraPart(target)
+	table.insert(cameras, {part = cameraPart, position = cameraPart.Position})
+	updateCameraList()
+	updateStatus("Camera " .. #cameras .. " placed", Color3.fromRGB(100, 255, 100))
+end
+
+-- View / Exit Camera
+function viewCamera(index)
+	if not cameras[index] then return end
+	if not viewingCamera then originalCameraCFrame = camera.CFrame end
+	viewingCamera = true
+	currentCameraIndex = index
+	cameraRotationX = 0
+	cameraRotationY = 0
+	camera.CameraType = Enum.CameraType.Scriptable
+	updateStatus("Viewing Camera " .. index, Color3.fromRGB(255, 200, 100))
+end
+
+local function exitCameraView()
+	if viewingCamera then
+		camera.CameraType = Enum.CameraType.Custom
+		viewingCamera = false
+		currentCameraIndex = nil
+		updateStatus("Exited camera view", Color3.fromRGB(100, 255, 100))
+	end
+end
+
+-- Delete nearest camera
+local function deleteNearestCamera()
+	if #cameras == 0 then return end
+	local char = player.Character
+	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+	local playerPos = char.HumanoidRootPart.Position
+	local nearestIndex, nearestDist = nil, math.huge
+	for i, cam in ipairs(cameras) do
+		local dist = (cam.part.Position - playerPos).Magnitude
+		if dist < nearestDist then
+			nearestDist = dist
+			nearestIndex = i
+		end
+	end
+	if nearestIndex and nearestDist < 20 then
+		cameras[nearestIndex].part:Destroy()
+		table.remove(cameras, nearestIndex)
+		updateCameraList()
+		updateStatus("Camera deleted", Color3.fromRGB(255, 200, 100))
+		if currentCameraIndex == nearestIndex then exitCameraView() end
+	end
+end
+
+-- Input Handling
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if gpe then return end
+	if input.KeyCode == PLACEMENT_KEY then
+		placeCamera()
+	elseif input.KeyCode == VIEW_TOGGLE_KEY then
+		if viewingCamera then exitCameraView()
+		else if #cameras > 0 then viewCamera(1) else updateStatus("No cameras placed", Color3.fromRGB(255,100,100)) end end
+	elseif input.KeyCode == DELETE_KEY then
+		deleteNearestCamera()
+	elseif input.KeyCode == PERSPECTIVE_TOGGLE_KEY then
+		thirdPersonMode = not thirdPersonMode
+		updateStatus(thirdPersonMode and "3rd Person" or "1st Person", Color3.fromRGB(100, 200, 255))
+	elseif input.KeyCode.Value >= Enum.KeyCode.One.Value and input.KeyCode.Value <= Enum.KeyCode.Nine.Value then
+		local index = input.KeyCode.Value - Enum.KeyCode.One.Value + 1
+		if cameras[index] then viewCamera(index) end
+	end
+end)
+
+-- Camera Update Loop
+RunService.RenderStepped:Connect(function()
+	if viewingCamera and currentCameraIndex and cameras[currentCameraIndex] then
+		local cam = cameras[currentCameraIndex]
+		if cam.part and cam.part.Parent then
+			cam.position = cam.part.Position
+		end
+
+		-- Keyboard-only rotation
+		if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+			cameraRotationX = math.clamp(cameraRotationX + CAMERA_LOOK_SPEED, -MAX_VERTICAL_ANGLE, MAX_VERTICAL_ANGLE)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.E) then
+			cameraRotationX = math.clamp(cameraRotationX - CAMERA_LOOK_SPEED, -MAX_VERTICAL_ANGLE, MAX_VERTICAL_ANGLE)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.R) then
+			cameraRotationY = cameraRotationY - CAMERA_LOOK_SPEED
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.F) then
+			cameraRotationY = cameraRotationY + CAMERA_LOOK_SPEED
+		end
+
+		local lookCFrame = CFrame.Angles(0, cameraRotationY, 0) * CFrame.Angles(cameraRotationX, 0, 0)
+		if thirdPersonMode then
+			local camPos = cam.position - (lookCFrame.LookVector * THIRD_PERSON_DISTANCE)
+			camera.CFrame = CFrame.new(camPos, cam.position)
+		else
+			camera.CFrame = CFrame.new(cam.position) * lookCFrame
+		end
+	end
+end)
+
+updateCameraList()
+updateStatus("Ready!", Color3.fromRGB(100, 255, 100))
